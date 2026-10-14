@@ -1,0 +1,216 @@
+# info.yml - the INGREDIENTS RapidSpider collects from every dental practice site
+# (for long/short descriptions and bullet points).
+#
+# How it works (rapidspider/facts.py):
+#   1. code finds the exact things itself, laya is not asked: emails/phones (`special`), the practice name seen on
+#      the page, and every `patterns` regex (year, hours, GDC number, postcode ...);
+#   2. page text is cut into small chunks; for each chunk laya answers one yes/no per ingredient:
+#      "does this text clearly state <description>?"  -> which ingredients exist on the page;
+#   3. every hit is narrowed to the one sentence that carries it; that location (zone top/middle/bottom +
+#      sentence number) is stored and counts toward confidence;
+#   4. the sentence is re-questioned by laya several times (facts.verify) - accepted facts go to the profile.
+#
+# per ingredient:  key (a-z_) | label | bullet (what a bullet about it looks like)
+#                  description (laya reads it: "...states <description>")
+#                  patterns [{re, value: <group>, 0 = whole match}] | examples [text] | max
+#                  special: emails | phones | name  (found by code, no laya)   ask: false (regex only)
+
+categories:
+  - key: treatments
+    label: Treatments offered
+    bullet: "Offers <treatments>"
+    description: "which dental treatments it provides: check-ups, hygiene, fillings, crowns, root canal, extractions, whitening, veneers, implants, orthodontics, Invisalign"
+    examples:
+      - "We offer check-ups, scale and polish, fillings, crowns, teeth whitening, Invisalign and dental implants."
+      - "Our treatments include root canal therapy, veneers, bridges and dentures."
+    max: 6
+
+  - key: nhs_private
+    label: NHS and private
+    bullet: "NHS and private patients / private only"
+    description: "whether it takes NHS patients, private patients or both, and whether it is accepting new patients"
+    examples:
+      - "We are accepting new NHS and private patients, adults and children."
+      - "We are a private-only practice and do not hold an NHS contract."
+    max: 2
+
+  - key: specialisms
+    label: Specialisms
+    bullet: "Specialises in <area>"
+    description: "what it specialises in or is best known for: implants, cosmetic dentistry, orthodontics, sedation, nervous patients, children, emergency care"
+    examples:
+      - "We specialise in dental implants and full-mouth restoration."
+      - "A practice known for gentle dentistry for nervous patients, with sedation available."
+    max: 4
+
+  - key: emergency_care
+    label: Emergency appointments
+    bullet: "Same-day emergency appointments"
+    description: "emergency or urgent dental appointments, same-day slots, out-of-hours or weekend cover"
+    examples:
+      - "Emergency appointments are available the same day. Call us as early as you can."
+      - "Out-of-hours emergency cover is available on 0113 123 4567."
+
+  - key: team_credentials
+    label: Team and registration
+    bullet: "GDC-registered dentists"
+    description: "its dentists and team: named dentists, qualifications, years of experience, General Dental Council registration, specialist status"
+    patterns:
+      - {re: '(?i)\bGDC\s*(?:no\.?|number|registration)?\s*:?\s*(\d{5,6})\b', value: 1}
+    examples:
+      - "Dr Smith (GDC 123456) graduated from the University of Leeds and has over 20 years of experience."
+      - "Our team of experienced dentists, hygienists and dental nurses are all registered with the General Dental Council."
+    max: 4
+
+  - key: years_established
+    label: Years in business
+    bullet: "Established in <year> / <N> years of experience"
+    description: "how long the practice has been trading: the year it started or years serving patients"
+    patterns:
+      - {re: '(?i)\b(?:since|established(?: in)?|est\.?|founded(?: in)?|trading since)\s*(?:in\s*)?((?:19|20)\d{2})\b', value: 1}
+      - {re: '(?i)\b(\d{1,2})\+?\s*years?(?:\x27|’)?(?: of)?\s*(?:experience|trading|in business|in dentistry|serving)', value: 1}
+    examples:
+      - "Established in 1992, we have been caring for local families for over 30 years."
+
+  - key: ownership
+    label: Ownership and size
+    bullet: "Independent / family-run / part of a group"
+    description: "who owns or runs it: independent, family run, owner-managed, small friendly team, or part of a dental group"
+    examples:
+      - "We are an independent, family-run practice and we know many of our patients by name."
+      - "Part of the Rodericks Dental Partners group."
+
+  - key: location_area
+    label: Location and area covered
+    bullet: "Based in <town>, serving <area>"
+    description: "where it is based, how to find it, nearby landmarks, parking or transport, and the areas it serves"
+    examples:
+      - "We are on the High Street in Horsforth, five minutes from the train station, with free parking at the rear."
+    max: 3
+
+  - key: opening_hours
+    label: Opening hours
+    bullet: "Open <days and hours>"
+    description: "opening days and times, evening or Saturday appointments"
+    patterns:
+      - {re: '(?i)\b(?:mon(?:day)?|tue(?:s(?:day)?)?)\.?\s*(?:-|–|to|until)\s*(?:fri(?:day)?|sat(?:urday)?|sun(?:day)?)\.?[^.\n]{0,60}?\d{1,2}(?::\d{2})?\s*(?:am|pm)?[^.\n]{0,20}', value: 0}
+    examples:
+      - "Open Monday to Friday 8:30am to 5:30pm, Saturday 9am to 1pm. Closed Sundays."
+    max: 2
+
+  - key: contact_booking
+    label: How to book
+    bullet: "Book online, by phone or in person"
+    description: "how patients can book or enquire: online booking, phone, email, contact form, referral, free consultation"
+    examples:
+      - "Book your appointment online or call us on 0113 123 4567. New patient consultations are free."
+
+  - key: fees_pricing
+    label: Fees and pricing
+    bullet: "Check-up from <price> / fee guide available"
+    description: "prices and fees: check-up cost, treatment price list, NHS band charges, free consultations"
+    patterns:
+      - {re: '(?i)\b(?:check[\s-]?ups?|examinations?|consultations?|hygiene|whitening|implants?|invisalign)[^.\n]{0,30}?from\s*£\s?\d[\d,]*(?:\.\d{2})?', value: 0}
+      - {re: '(?i)\bfrom\s*£\s?\d[\d,]*(?:\.\d{2})?[^.\n]{0,40}', value: 0}
+    examples:
+      - "A new patient check-up and x-rays costs £65. Teeth whitening from £295."
+    max: 3
+
+  - key: payment_plans
+    label: Payment and finance
+    bullet: "Payment plans / 0% finance"
+    description: "payment options: monthly payment plan, interest-free finance, dental insurance, accepted cards"
+    examples:
+      - "Spread the cost of treatment with 0% interest-free finance over 12 months."
+      - "Join our monthly dental plan from £12.95 a month."
+
+  - key: facilities_technology
+    label: Facilities and technology
+    bullet: "Digital x-rays, 3D scanner, wheelchair access"
+    description: "its premises and technology: modern surgeries, digital x-rays, intraoral scanner, CBCT, sedation suite, wheelchair access, parking"
+    examples:
+      - "Our modern surgeries use digital x-rays and an intraoral scanner, and have step-free wheelchair access."
+
+  - key: accreditations
+    label: Accreditations and memberships
+    bullet: "Member of / accredited by <body>"
+    description: "professional bodies and quality marks: General Dental Council, CQC, BDA Good Practice, Care Quality Commission rating, Invisalign provider status, Dental Protection"
+    examples:
+      - "We are regulated by the Care Quality Commission and a member of the British Dental Association Good Practice Scheme."
+      - "Platinum Invisalign provider."
+    max: 5
+
+  - key: patient_promise
+    label: Why choose them
+    bullet: "Known for <selling point>"
+    description: "its selling points and promises to patients: gentle care, no-pressure advice, nervous patients welcome, clear pricing, modern techniques"
+    examples:
+      - "We pride ourselves on gentle, honest advice and never rush an appointment."
+    max: 4
+
+  - key: awards_reviews
+    label: Awards and reviews
+    bullet: "Rated <N> stars / award winner"
+    description: "awards, ratings, review scores or testimonials about the practice"
+    patterns:
+      - {re: '(?i)\b(\d(?:\.\d)?)\s*(?:/|out of)\s*5\b[^.\n]{0,40}', value: 0}
+    examples:
+      - "Rated 4.9 out of 5 from over 300 Google reviews."
+      - "Winner of Best Dental Practice at the 2024 Dental Awards."
+    max: 3
+
+  - key: children_families
+    label: Children and families
+    bullet: "Children and family dentistry"
+    description: "whether it treats children and families, free NHS child care, family appointments, anxious or special-needs patients"
+    examples:
+      - "We welcome patients of all ages and NHS dental care is free for children under 18."
+    max: 2
+
+  - key: history_story
+    label: History and story
+    bullet: "Story: how it started and grew"
+    description: "its history and story: how it started, who founded it, how it has grown or what it stands for"
+    examples:
+      - "What began as a single surgery in 1987 has grown into one of the area's best-known family practices."
+    max: 3
+
+  # ---- exact ingredients (found by code) ----
+  - key: company_name
+    label: Practice name
+    bullet: "<Name>"
+    description: "the trading name of the practice"
+    special: name
+    max: 1
+
+  - key: email
+    label: Email
+    bullet: "Email <address>"
+    description: "an email address of the practice"
+    special: emails
+    max: 3
+
+  - key: phone
+    label: Phone
+    bullet: "Call <number>"
+    description: "a telephone number of the practice"
+    special: phones
+    max: 3
+
+  - key: registered_company
+    label: Registered company
+    bullet: "Registered company no. <number>"
+    description: "the registered company number"
+    ask: false
+    patterns:
+      - {re: '(?i)(?:company|registered|registration)\s*(?:no\.?|number|num|#)\s*:?\s*(?:in england and wales\s*(?:no\.?)?\s*)?([A-Z]{0,2}\d{6,8})', value: 1}
+    max: 1
+
+  - key: postcode
+    label: Postcode
+    bullet: "Based at <postcode>"
+    description: "the postcode of the practice address"
+    ask: false
+    patterns:
+      - {re: '\b([A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b', value: 1}
+    max: 1

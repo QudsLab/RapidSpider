@@ -1,0 +1,27 @@
+# data and results
+output/
+input/*
+!input/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+logs/
+
+# what laya learns from your data
+learned_examples.yml
+learned_auto.yml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# editors and os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+/.backup

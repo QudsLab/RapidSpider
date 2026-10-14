@@ -1,0 +1,143 @@
+# RapidSpider config: UK dental practices (100 sites in input/sites.csv)
+#   python main.py config.yml
+name: dental
+
+input:
+  path: input/sites.csv                       # csv | sqlite | json  (relative to this file)
+  format: auto
+  columns:
+    id: id
+    url: website
+    name: name
+    address: [town]
+  extra_columns: [town]
+  limit: 0                                    # 0 = all rows
+
+output:
+  dir: output/dental                          # ONE folder for this config: track.db + one db per table
+  per_day: false                              # true -> output/dental/2026-10-15/ (fresh dbs every day)
+  max_db_mb: 45                               # each db file rolls over to *_0002.db before it reaches this
+  store_pages: true
+
+run:
+  threads: 3
+  max_attempts: 3                             # error/timeout rows are retried this many times in total
+  site_budget_sec: 240
+  resume: true                                # skip sites already finished in this db
+  retry_statuses: [error, timeout, laya_down]
+
+crawl:
+  max_pages: 4                                # home + 3 sub pages
+  use_sitemap: true
+  max_page_chars: 40000
+  max_site_chars: 120000
+  min_site_words: 60
+
+parse:
+  laya_block_filter: true                     # laya keep/drop on every remaining text block (cuts boilerplate)
+  drop_confidence: 0.6                        # drop only when laya says "drop" at least this sure
+  block_min_words: 4
+  near_dup: 0.7                               # paragraphs this similar to one already kept on the site are dropped
+
+fetch:
+  ladder: [http, browser, browser_headed, browser_tor]   # tried in this order until a page is accepted
+  timeout_sec: 30
+
+network:
+  tor_socks: null                             # e.g. socks5://127.0.0.1:9050  (Tor must be running)
+  dead_confirm_tries: 3
+  accept_unconfirmed_dead: false
+
+laya:                                         # mandatory, runs INSIDE this program (no separate server)
+  device: auto                                # auto | cpu | cuda
+  models: auto                                # auto = english on cpu, all three on gpu
+  torch_threads: 8
+  log: {enabled: true, text_chars: 400}       # every question + answer -> laya_calls_*.db (see the web UI)
+  confirm: {rounds: 5, min_agree: 0.6}        # a verdict that ends a site (dead, parked, third party, no content) is re-asked first
+  # Solved examples laya sees (the nearest ones are shown for each question). Add more any time here, or
+  # just correct laya in the web UI (it writes learned_examples.yml next to this file).
+  examples:
+    use_defaults: true                        # built-in generic examples are kept; these are added
+    k: 3
+    page_kind:                                # label: none | domain_parked | domain_expired | hosting_placeholder |
+                                              #        registrar_landing | error_page | login_wall | holding_page |
+                                              #        third_party_platform
+      - {label: none, text: "Oakfield Dental Practice is a friendly family dentist in Leeds. We offer check-ups, hygiene, whitening and Invisalign. Call us on 0113 123 4567 to book."}
+      - {label: none, text: "Welcome to Riverside Dental Care. NHS and private dentistry, emergency appointments, dental implants. Find us at 14 Station Road."}
+      - {label: third_party_platform, text: "Find a dentist near you. Search 4,000 dental practices across the UK. Compare prices and read patient reviews."}
+      - {label: third_party_platform, text: "Log in to Facebook to connect with Oakfield Dental. Page, Dentist and dental surgery. Create new account."}
+      - {label: third_party_platform, text: "Part of a group of 400 dental practices across the UK. Find your nearest practice. Join our team. Careers."}
+      - {label: domain_parked, text: "oakfielddental.co.uk may be for sale. Inquire about this domain. Related searches: dentist near me, teeth whitening."}
+      - {label: hosting_placeholder, text: "Default web site page. This is the default page for a newly created hosting account."}
+    block:                                    # label: keep | drop
+      - {label: keep, text: "We offer general dentistry, hygiene visits, tooth whitening, Invisalign and dental implants in a relaxed, modern surgery."}
+      - {label: keep, text: "Our dentists are registered with the General Dental Council and every treatment plan is explained and priced before we start."}
+      - {label: keep, text: "Oakfield Dental, 12 High Street, Leeds LS1 4AB. Open Monday to Friday 8:30am to 5:30pm, Saturday 9am to 1pm."}
+      - {label: keep, text: "Emergency appointments are available the same day. Call us and we will see you as soon as we can."}
+      - {label: drop, text: "We use cookies to improve your experience. By continuing you agree to our cookie policy."}
+      - {label: drop, text: "Home About Us Treatments Fees Meet the Team Contact Privacy Policy Cookie Policy"}
+      - {label: drop, text: "Book online now. Click here to join our patient plan. Terms apply."}
+      - {label: drop, text: "Read more. Rated 5 stars on Google. Powered by Reviews.io"}
+      - {label: drop, text: "Complaints procedure. Data protection and privacy notice. Website by Smile Digital."}
+    logo:                                     # label: logo | not_logo
+      - {label: logo, text: "file: /wp-content/uploads/2021/03/oakfield-dental-logo.png | alt: Oakfield Dental | found as: img | placement: header link"}
+      - {label: not_logo, text: "file: /images/team/dr-smith.jpg | alt: Dr Smith, principal dentist | found as: img | placement: body"}
+      - {label: not_logo, text: "file: /images/gdc-badge.png | alt: General Dental Council registered | found as: img | placement: body"}
+
+# What the engine does for each kind of page it recognises
+classes:
+  holding:                                    # hosting/cPanel-style "One moment, please..." shield
+    action: wait
+    max_wait_sec: 45
+    poll_sec: 1.5
+    clear_cookies: all                        # all | [cookie names]
+    clear_every_sec: 12                       # clear cookies + reload on this timer
+    extra_patterns: []
+  cloudflare:
+    action: wait
+    max_wait_sec: 25
+    extra_patterns: []
+  dead:                                       # parked / expired / placeholder / suspended / 404
+    action: stop
+    extra_patterns: []
+  third_party:                                # decided by laya (+ signals below), never by a domain list. Not useless: used strictly
+    action: single_page
+    status: third_party
+    identity_min: 2                           # proofs needed that the page is THIS trader (name + phone/email/postcode ...)
+    trader_min: 0.6                           # only lines laya says are about THIS trader (or carry its name/phone/email/postcode) are kept
+    follow_max: 3                             # "more details" links followed from a third-party page (each must prove identity)
+    signals_min: 5
+    signals:                                  # multi-branch / marketplace chrome
+      - 'find a (dentist|dental practice|practice|clinic|branch)'
+      - 'our (practices|clinics|branches|locations)'
+      - '\d{2,}\+?\s*(practices|clinics|branches|locations) (across|in|around)'
+      - 'across (scotland|england|wales|the uk|the country)'
+      - 'search (over|all|our) \d{2,}[\d,]*\s*(dentists|practices|clinics)'
+      - 'join our (team|group|network)'
+      - 'part of (a|the) group'
+
+facts:                                        # business facts for descriptions / bullet points
+  enabled: true
+  file: info.yml                              # the categories laya iterates over (edit it freely)
+  scan:
+    chunk_sentences: 8                        # numbered sentences laya reads at once: "which sentence states X, or none?"
+    pick_min: 0.55                            # laya confidence needed for a picked sentence to become a candidate
+    questions_per_pass: 24                    # ingredient questions sharing one forward pass (fewer passes = faster)
+  max_per_category: 4
+  ready_min_categories: 4                     # profiles.ready = 1 when this many categories have a fact
+  verify:                                     # no manual review: laya re-questions every candidate fact itself
+    rounds: 8                                 # differently worded questions per fact, A/B answer keys flipped
+    max_candidates: 20                        # picked sentences verified per site (one laya pass each, `rounds` questions in it)
+    accept_frac: 0.67                         # share of rounds that must agree -> accepted into the profile
+    auto_teach: true                          # unanimous verdicts become laya examples (learned_auto.yml)
+
+ui:                                           # web interface: monitor, pause, review data, laya questions/answers
+  enabled: true
+  host: 127.0.0.1
+  port: 8800
+  keep_alive: true                            # stay up after the queue is empty (review, requeue, rescan)
+
+logos:
+  enabled: false                              # false = skip logos entirely (set true to collect logo candidates)
+  laya_filter: true                           # only images laya says are logos get saved
+  max_candidates: 8

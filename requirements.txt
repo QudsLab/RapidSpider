@@ -1,0 +1,15 @@
+# --- RapidSpider engine ---
+pyyaml>=6.0
+httpx[socks]>=0.27
+playwright>=1.44
+beautifulsoup4>=4.12
+lxml>=5.0
+flask>=3.0            # web interface
+
+# --- laya (mandatory, loaded inside this program). torch: install the build you already use (CUDA or CPU) ---
+laya==0.3.9
+transformers>=5.17,<6
+safetensors>=0.4
+numpy>=2.0
+huggingface_hub>=0.30
+psutil>=5.9
