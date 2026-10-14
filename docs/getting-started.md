@@ -14,13 +14,7 @@
 
 ## 2. Install
 
-Use a virtual environment so the packages stay separate from the rest of your system.
-
 ```bash
-python -m venv .venv
-# Windows:  .venv\Scripts\activate
-# Linux/macOS:  source .venv/bin/activate
-
 pip install torch                      # CPU build. For a GPU use the CUDA build from pytorch.org instead
 pip install -r requirements.txt
 playwright install chromium            # one time
