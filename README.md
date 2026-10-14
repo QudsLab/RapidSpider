@@ -28,7 +28,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/credits-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/credits-light.svg">
-    <img src="assets/credits-light.svg" alt="Made with Claude. Well tested at Rightbiz." width="620">
+    <img src="assets/credits-light.svg" alt="Made with Claude. Well tested at Rightbiz." width="600">
   </picture>
   </a>
 </p>
