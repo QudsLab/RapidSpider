@@ -61,13 +61,6 @@ cd RapidSpider
 ### 2. Install
 
 ```bash
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
-
 pip install torch                  # CPU build. With an NVIDIA GPU install the CUDA build from pytorch.org instead
 pip install -r requirements.txt
 playwright install chromium        # one time
@@ -340,6 +333,8 @@ Laya is shown solved examples next to every question, so you steer it by adding 
   &nbsp;
   <img alt="Well tested at RightBiz" src="https://img.shields.io/badge/Well%20tested%20at-RightBiz-24292f?style=for-the-badge">
 </p>
+
+<p align="center"><a href="https://www.rightbiz.co.uk"><img src="assets/rightbiz.svg" alt="Rightbiz" height="44"></a></p>
 
 - **Made with [Claude](https://claude.ai)** by Anthropic. Claude helped build the code, the documentation and the graphics in this repository.
 - **Well tested at [RightBiz](https://www.rightbiz.co.uk).**
