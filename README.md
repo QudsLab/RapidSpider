@@ -23,10 +23,7 @@
   <a href="docs/README.md"><img alt="Documentation" src="https://img.shields.io/badge/%F0%9F%93%96%20Documentation-24292f?style=for-the-badge"></a>
 </p>
 
-<p align="center">
-  <a href="#credits"><img alt="Made with Claude" src="https://img.shields.io/badge/Made%20with-Claude-D97757?style=for-the-badge&logo=claude&logoColor=white"></a>
-  <a href="#credits"><img alt="Well tested at RightBiz" src="https://img.shields.io/badge/Well%20tested%20at-RightBiz-24292f?style=for-the-badge"></a>
-</p>
+<p align="center"><a href="#credits"><img src="assets/credits.svg" alt="Made with Claude. Well tested at Rightbiz." width="620"></a></p>
 
 <p align="center"><img src="assets/pipeline.svg" alt="RapidSpider pipeline: your list, fetch, classify, crawl, clean, facts, output" width="100%"></p>
 
@@ -328,13 +325,7 @@ Laya is shown solved examples next to every question, so you steer it by adding 
 
 ## Credits
 
-<p align="center">
-  <img alt="Made with Claude" src="https://img.shields.io/badge/Made%20with-Claude-D97757?style=for-the-badge&logo=claude&logoColor=white">
-  &nbsp;
-  <img alt="Well tested at RightBiz" src="https://img.shields.io/badge/Well%20tested%20at-RightBiz-24292f?style=for-the-badge">
-</p>
-
-<p align="center"><a href="https://www.rightbiz.co.uk"><img src="assets/rightbiz.svg" alt="Rightbiz" height="44"></a></p>
+<p align="center"><img src="assets/credits.svg" alt="Made with Claude. Well tested at Rightbiz." width="760"></p>
 
 - **Made with [Claude](https://claude.ai)** by Anthropic. Claude helped build the code, the documentation and the graphics in this repository.
 - **Well tested at [RightBiz](https://www.rightbiz.co.uk).**
