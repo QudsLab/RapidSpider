@@ -8,10 +8,15 @@
         single_page  third-party host: keep this one page, never crawl
         crawl        real site: laya reviews it, then sitemap/links -> a few pages
   -> logos (optional, laya picks) -> sqlite
+
+laya.enabled: false (raw mode): no laya decisions anywhere - patterns only, full raw text + html stored,
+track.processed = 0; postprocess.py runs laya over it later.
 """
 import asyncio
 import copy
+import random
 import re
+import types
 from collections import deque
 import time
 import traceback
@@ -19,7 +24,7 @@ from urllib.parse import urlparse
 
 from . import logos as logos_mod
 from .store import now
-from .classify import Verdict, classify, identity, identity_hit, third_party_extra
+from .classify import Verdict, classify, identity, identity_hit, name_in_text, third_party_extra
 from .fetch import RUNGS, resolves
 from .laya import ANOMALIES, CUR_SITE, DEAD_ANOMALIES, LayaDown
 from .parse import (clean_text, near_dup, shingles, contacts_of, host_of, links_of, norm_url, robots_sitemaps, same_site,
@@ -40,7 +45,7 @@ class Site:
         self.summary = ""
         self.home_html = ""
         self.error = ""
-        self.log_text = None     # normally built from incidents
+        self.log_text = None     # set only by an importer; normally built from incidents
         self.incidents = []      # (at, step, outcome, detail) - flushed once in store.save
         self.logos = []
         self.facts = None        # list once facts were extracted (None = not run)
@@ -58,6 +63,8 @@ class Site:
 
 class Engine:
     MAX_WORKERS = 16
+    busy = 0         # sites taken from the queue and not finished
+    hold = False     # True: run() does not end when the queue is empty (main.py --retry ends it)
 
     def __init__(self, cfg, store, fetcher, laya, log, facts=None, loader=None):
         self.cfg, self.store, self.f, self.laya, self.log = cfg, store, fetcher, laya, log
@@ -88,6 +95,30 @@ class Engine:
             return "paused" if not self.active else "pausing"
         return "running" if (self.active or (self.q is not None and not self.q.empty())) else "idle"
 
+    _hbusy, _hready = None, None
+
+    async def _guarded(self, row):
+        """one request series per host at a time, and run.host_delay_sec (+ up to 50%) between them, so a server
+        never sees the same trader / group site hit again and again within seconds."""
+        gap = float(self.cfg.run.get("host_delay_sec", 0) or 0)
+        url = norm_url(row.url)
+        host = host_of(url) if url else ""
+        if not gap or not host or host in self.host_cache:
+            return await self.process(row)
+        if self._hbusy is None:
+            self._hbusy, self._hready = set(), {}
+        if host in self._hbusy or time.time() < self._hready.get(host, 0):
+            self.queued.add(row.id)                         # not now: back of the queue, other sites go first
+            self.q.put_nowait(row)
+            await asyncio.sleep(0.4)
+            return
+        self._hbusy.add(host)
+        try:
+            await self.process(row)
+        finally:
+            self._hbusy.discard(host)
+            self._hready[host] = time.time() + gap * random.uniform(1.0, 1.5)
+
     def enqueue(self, rows):
         cnt = {}
         for r in rows:
@@ -110,6 +141,8 @@ class Engine:
 
     def rescan(self):
         """UI: re-read the input and queue every site that still has to run (new rows, requeued sites)."""
+        # a failed shared fetch of a group site must not decide for its branches again: only good results stay cached
+        self.host_cache = {h: c for h, c in self.host_cache.items() if c and c[0] == "ok"}
         return self.enqueue(self.loader()) if self.loader else 0
 
     # ================================================================= pool
@@ -131,7 +164,11 @@ class Engine:
                     await asyncio.sleep(0.5)
                     continue
                 self.queued.discard(row.id)
-                await self.process(row)
+                self.busy += 1
+                try:
+                    await self._guarded(row)
+                finally:
+                    self.busy -= 1
                 if self.cfg.run.pause_between_sites_sec:
                     await asyncio.sleep(self.cfg.run.pause_between_sites_sec)
 
@@ -139,7 +176,7 @@ class Engine:
         try:
             while not self.quit and not self.stop.is_set():
                 await asyncio.sleep(0.5)
-                if not keep and self.q.empty() and not self.active:
+                if not keep and not self.hold and self.q.empty() and not self.active:
                     break
         finally:
             self.quit = True
@@ -149,6 +186,7 @@ class Engine:
 
     # ================================================================= one site
     async def process(self, row):
+        await self.f.wait_route()                       # no working tor / proxy right now: wait, never fetch (or mark dead) without a route
         t0 = time.time()
         url = norm_url(row.url)
         host = host_of(url) if url else ""
@@ -248,9 +286,47 @@ class Engine:
         for page, text in good:
             await self._trader_lines(s, page, text)
         if not s.pages:
+            if await self._same_company(s, pages):
+                return
             s.set("no_content", "third_party", "group site: no text about this branch")
             return
         s.set(tp.get("status", "third_party"), "third_party", f"group site | proof {'+'.join(sorted(proofs))} | {len(s.pages)} page(s)"[:120])
+
+    async def _same_company(self, s, pages):
+        """no line of the page proves this trader (name + phone / postcode), but the title or text carries its name.
+        Laya is asked, with the usual re-questioning: (1) is this the website of the same business, and not another
+        company, a directory or a third-party page? (2) is it a car trader's own business page, not a holding /
+        parked / placeholder page? Both yes: the whole page is kept (status third_party = group-level data)."""
+        if not self.laya.enabled or not pages:
+            return False
+        name = s.row.name or ""
+        page, text = pages[0]
+        host = (host_of(page.url or "") or "").replace(".", " ")
+        hit = name_in_text(page.title or "", name) or name_in_text(host, name) or name_in_text((text or "")[:4000], name)
+        total = sum(words(t) for _, t in pages)
+        s.note("same-company", "name-found" if hit else "name-not-found", f"{(page.title or '')[:60]} | {total} words")
+        if not hit or total < self.cfg.crawl.min_site_words:
+            return False
+        sample = types.SimpleNamespace(text=f"{page.title or ''}. {text or ''}")
+        where = (s.row.address or "")[:80]
+        checks = (
+            ("same_company", f"this web page belongs to the same business as '{name}'" + (f" ({where})" if where else "") +
+             ", not a different company, a directory, a marketplace or a social media page"),
+            ("real_site", "this web page is the business's own site: its services, about us or contact details, "
+                           "and not a holding, parked or placeholder page"),
+        )
+        for label, claim in checks:
+            if not await self._sure(s, sample, label, claim):
+                return False
+        tp = self.cfg.classes.third_party
+        s.pages, s.emails, s.phones = [], set(), set()
+        for pg, tx in pages:
+            c = copy.copy(pg)
+            s.pages.append((c, tx))
+            em, ph = contacts_of(c.html or "<p>" + (tx or "").replace("\n", "</p><p>") + "</p>")
+            s.emails.update(em), s.phones.update(ph)
+        s.set(tp.get("status", "third_party"), "third_party", f"group site: laya confirms same company, whole page kept | {len(s.pages)} page(s)"[:120])
+        return True
 
     # ================================================================= flow
     async def _site(self, s, url, deadline, sessions):
@@ -267,10 +343,11 @@ class Engine:
                 s.final_url, ok = url, True
         if not ok:
             s.note("dns", "failed", why)
-            verdict = await self._confirm_dead(s, url, why)
-            if verdict == "dead" or verdict == "unconfirmed":
-                return
-            ladder = [r for r in ladder if RUNGS[r][2]] or ["http_tor"]   # reachable only via tor
+            if "temporary" not in why:
+                verdict = await self._confirm_dead(s, url, why)
+                if verdict == "dead" or verdict == "unconfirmed":
+                    return
+            ladder = [r for r in ladder if RUNGS[r][2]] or ["http_tor"]   # reachable only via tor (our own resolver failed: tor resolves)
 
         accepted = await self._ladder(s, url, ladder, deadline, sessions)
         if not accepted:
@@ -290,16 +367,31 @@ class Engine:
     async def _confirm_dead(self, s, url, why):
         net = self.cfg.network
         rid = s.row.id
+        self.f.reset_exit(url)
+        if "temporary" in why:                                  # our own DNS hiccup is no evidence
+            s.set("error", "error", f"dns failed ({why}); will retry")
+            return "unconfirmed"
         if self.f.http_tor:
+            if self.f.route_ok and not self.f.route_ok():
+                s.set("error", "error", "dns failed; no working route to confirm - will retry")
+                return "unconfirmed"
+            hard = 0
             for i in range(net.dead_confirm_tries):
+                if i:
+                    self.f.new_exit(url, climb=False)
                 pg = await (await self.f.session("http_tor")).get(url)
                 if pg.html or (pg.status and pg.status < 500):
                     s.note("dead-confirm", "reachable via tor", f"try {i + 1}")
                     s.tor = True
                     return "reachable"
+                if not self.f.gateway or "No Route" not in (pg.error or ""):
+                    hard += 1                                   # reached through a working route and still nothing: not a route problem
                 await asyncio.sleep(1.5)
-            s.set("dead", "dead", f"dns dead (confirmed: direct + {net.dead_confirm_tries} tor tries)")
-            return "dead"
+            if hard >= net.dead_confirm_tries:
+                s.set("dead", "dead", f"dns dead (confirmed: direct + {net.dead_confirm_tries} tor tries)")
+                return "dead"
+            s.set("error", "error", "dns failed and tor could not confirm (route problem) - will retry")
+            return "unconfirmed"
         if net.accept_unconfirmed_dead:
             s.set("dead", "dead", f"dns dead ({why}), tor not configured")
             return "dead"
@@ -311,19 +403,32 @@ class Engine:
         rid = s.row.id
         cl = self.cfg.classes
         seen = []       # (rung, verdict) of every attempt
+        via_tor = False
+        first = True
+        self.f.reset_exit(url)
         for rung in ladder:
             if deadline - time.time() < 6:
                 s.set("timeout", s.cls, "no time left for next rung")
                 return None
+            if not first:                                   # not straight after the last request: different exit, a pause
+                gap = float(self.cfg.run.get("rung_delay_sec", 0) or 0)
+                if gap:
+                    await asyncio.sleep(gap * random.uniform(0.8, 1.4))
+                if RUNGS[rung][2]:
+                    self.f.new_exit(url)
+            first = False
             kind = RUNGS[rung][0]
+            if via_tor and not RUNGS[rung][2]:
+                continue                                    # a shield already seen: never touch it again from the direct IP
             try:
-                sess = await self.f.session(rung)
+                sess = await self.f.session(rung, s.row.id)
             except Exception as e:
                 s.note(rung, "unavailable", f"{type(e).__name__}: {e}")
                 continue
             sessions.append(sess)
             page = await sess.get(url, deadline)
-            if page.error and not page.html and url.startswith("https://") and not s.row.url.lower().startswith("https://"):
+            if page.error and not page.html and url.startswith("https://") and (
+                    not s.row.url.lower().startswith("https://") or "ERR_SSL" in page.error or "ERR_CERT" in page.error):
                 # input had no scheme and https failed (old sites are often http-only): try plain http once
                 alt = "http://" + url[len("https://"):]
                 s.note(rung, "https-failed", page.error[:100])
@@ -333,6 +438,12 @@ class Engine:
             v = classify(page, self.cfg, s.row.name)
             s.note(rung, v.cls, f"{v.kind} {v.reason} http={page.status} {page.ms}ms {page.error}")
 
+            if (v.cls in ("holding", "cloudflare") and self.cfg.fetch.get("shield_via_tor", True) and not RUNGS[rung][2]
+                    and any(RUNGS[r][2] and RUNGS[r][0] == "browser" for r in ladder) and self.f.tor):
+                via_tor = True                              # protects the user's IP: shields are only worked on through tor
+                seen.append((rung, v))
+                s.note(rung, "shield-seen", f"{v.cls}: moving to tor, direct IP not used on shields")
+                continue
             if v.cls in ("holding", "cloudflare") and cl[v.cls].action == "wait":
                 if kind == "browser":
                     page, v = await self._wait_loop(sess, page, v, deadline, rung)
@@ -352,7 +463,7 @@ class Engine:
                 # 404/410 over plain http is not final: a bot wall can look like that. confirm in a browser.
                 if v.kind.startswith("http_") and kind == "http" and any(RUNGS[r][0] == "browser" for r in ladder):
                     continue
-                if v.kind != "laya_giveup":
+                if v.kind != "laya_giveup" and self.laya.enabled:
                     real, an, near = await self.laya.page_review(page.text, page.title)
                     s.note("laya-review", an, f"real={real}{self._near(near, an)}")
                     if an == "none" and real is not False and not v.kind.startswith("http_"):
@@ -428,10 +539,12 @@ class Engine:
         return ""
 
     # ----------------------------------------------------------------- garbage reduction
-    async def _tidy(self, s, page, seen_lines, kept):
-        """clean_text -> drop lines seen on earlier pages -> laya keep/drop per block -> near-duplicate paragraphs."""
+    async def _tidy(self, s, page, seen_lines, kept, raw=None):
+        """clean_text -> drop lines seen on earlier pages -> laya keep/drop per block -> near-duplicate paragraphs.
+        raw: already cleaned text (postprocess of data that has no html)."""
         cfg, pc = self.cfg, self.cfg.parse
-        raw = clean_text(page.html, cfg)
+        if raw is None:
+            raw = clean_text(page.html, cfg)
         page.raw = raw                       # the full text before any laya filtering; stored in pages.raw for later reprocessing
         lines = [ln for ln in raw.split("\n") if ln not in seen_lines]
         seen_lines.update(raw.split("\n"))
@@ -472,20 +585,61 @@ class Engine:
         return text
 
     # ----------------------------------------------------------------- waiting on shields
+    _MOVES = {
+        "wait": "do nothing, the page is processing by itself and will redirect",
+        "wander": "move the mouse around like a person reading the page",
+        "scroll": "scroll the page a little like a person",
+        "click_challenge": "click the verification checkbox widget (Cloudflare / Turnstile / captcha) like a person",
+        "click_button": "click the visible verify / continue button like a person",
+        "reload": "re-open the page keeping cookies",
+        "reset": "forget cookies and start the visit again from scratch",
+        "escalate": "this browser looks detected, try a different browser mode",
+    }
+
     async def _wait_loop(self, sess, page, v, deadline, rung):
+        """stay on a shield page like a person would. Every few seconds laya picks the next move from the moves
+        that are possible right now (and not already failing); the mouse keeps drifting between moves."""
         conf = self.cfg.classes[v.cls]
         t_start = time.time()
         max_wait = max(0.0, min(conf.max_wait_sec, deadline - t_start - 5))
         poll = conf.poll_sec
-        ce = conf.get("clear_every_sec") or 0
-        last_clear = t_start
-        n = 0
+        n, hist, used = 0, [], {}
         snap, v2 = page, v
+        can = conf.get("interact", True) and hasattr(sess, "probe")
         while time.time() - t_start < max_wait:
             await asyncio.sleep(poll)
-            await sess.poke()
-            snap = await sess.snapshot(page.status)
+            if can:
+                pr = await sess.probe()
+                opts = {"wait": self._MOVES["wait"], "wander": self._MOVES["wander"], "scroll": self._MOVES["scroll"]}
+                if pr["challenge"]:
+                    opts["click_challenge"] = self._MOVES["click_challenge"]
+                if pr["buttons"]:
+                    opts["click_button"] = self._MOVES["click_button"] + " (" + ", ".join(pr["buttons"][:3]) + ")"
+                if time.time() - t_start > 10:
+                    opts["reload"] = self._MOVES["reload"]
+                if time.time() - t_start > 25:
+                    opts["reset"] = self._MOVES["reset"]
+                    opts["escalate"] = self._MOVES["escalate"]
+                for k in [k for k in opts if used.get(k, 0) >= (1 if k in ("reload", "reset", "escalate") else 3) and k not in ("wait", "wander")]:
+                    opts.pop(k)                                         # never repeat a move that keeps failing
+                move = await self.laya.shield_action(snap.text, opts, hist) or "wait"
+                if move in ("wait", "wander") and sum(1 for h in hist[-3:] if h[0] in ("wait", "wander")) >= 3:
+                    move = next((k for k in ("click_challenge", "click_button") if k in opts), move)   # stalled: try what is possible
+                if move == "escalate":
+                    return snap, v2
+                used[move] = used.get(move, 0) + 1
+                if move != "wait":
+                    await sess.act(move)
+                else:
+                    await sess.wander()                                 # even when waiting, the mouse stays alive
+                hist.append((move, "pending"))
+            nxt = await sess.snapshot(page.status)
+            if nxt.error and not nxt.html:                      # the page is navigating right now: keep waiting, keep the last view
+                continue
+            snap = nxt
             v2 = classify(snap, self.cfg)
+            if hist:
+                hist[-1] = (hist[-1][0], "still " + v2.cls)
             if v2.cls not in ("holding", "cloudflare"):
                 return snap, v2
             n += 1
@@ -496,10 +650,6 @@ class Engine:
                     return snap, Verdict("ok", "laya", "laya: content visible")
                 if ruling == "giveup":
                     return snap, Verdict("dead", "laya_giveup", "laya: permanent error page")
-            if ce and time.time() - last_clear >= ce:
-                await sess.clear_cookies(conf.get("clear_cookies"))
-                await sess.reload()
-                last_clear = time.time()
         return snap, v2
 
     # ----------------------------------------------------------------- third party
@@ -512,6 +662,8 @@ class Engine:
         ok, proofs = identity(page, s.row, need)
         s.note("identity", "ok" if ok else "failed", f"{page.url}: {'+'.join(proofs) or 'no proof'}")
         if not ok:
+            if await self._same_company(s, [(page, page.text or "")]):
+                return
             s.set("no_content", "third_party", f"third-party page not proven to be this trader ({'+'.join(proofs) or 'no proof'})")
             return
         seen_lines, kept = set(), []
@@ -537,10 +689,10 @@ class Engine:
                     await self._trader_page(s, p, seen_lines, kept)
         s.set(tp.get("status", "third_party"), "third_party", f"{v.kind}: {v.reason} | proof {'+'.join(proofs)} | {len(s.pages)} page(s)"[:120])
 
-    async def _trader_page(self, s, page, seen_lines, kept):
+    async def _trader_page(self, s, page, seen_lines, kept, raw=None):
         """third-party page: keep ONLY the lines about this trader, never the portal's own text or other listings.
         A line stays when it carries the trader's name/phone/email/postcode, or laya says it is about the trader."""
-        return await self._trader_lines(s, page, await self._tidy(s, page, seen_lines, kept))
+        return await self._trader_lines(s, page, await self._tidy(s, page, seen_lines, kept, raw))
 
     async def _trader_lines(self, s, page, text):
         tp = self.cfg.classes.third_party
@@ -553,7 +705,10 @@ class Engine:
             mine += [ln for ln, p in zip(rest, ps) if p >= float(tp.get("trader_min", 0.6))]
         mine = [ln for ln in lines if ln in set(mine)]           # page order
         out = "\n".join(mine)
-        page.raw = out                       # third-party: the portal's own text is never stored
+        # third-party: the portal's own text is never stored - except in raw mode (no laya), where page.raw keeps the
+        # full cleaned text (set by _tidy) so postprocess.py can do this trader-only filtering later
+        if self.laya.enabled:
+            page.raw = out
         s.note("trader-only", "ok", f"{page.url}: kept {len(mine)}/{len(lines)} lines")
         if words(out) < self.cfg.crawl.min_page_words:
             return False
@@ -583,6 +738,13 @@ class Engine:
                     break
                 p = await sess.get(u, deadline)
                 v = classify(p, cfg)
+                if v.cls in ("holding", "cloudflare") and cfg.classes[v.cls].get("action") == "wait":
+                    p, v = await self._wait_loop(sess, p, v, deadline, None)
+                    if v.cls != "ok" and deadline - time.time() > 15:      # the shield came back after we passed it: ask again once
+                        p = await sess.get(u, deadline)
+                        v = classify(p, cfg)
+                        if v.cls in ("holding", "cloudflare"):
+                            p, v = await self._wait_loop(sess, p, v, deadline, None)
                 s.note("subpage", v.cls, f"{u} http={p.status}")
                 if v.cls != "ok":
                     continue

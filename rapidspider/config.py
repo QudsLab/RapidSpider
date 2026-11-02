@@ -22,9 +22,10 @@ DEFAULTS = {
     "output": {
         "dir": None,                 # one folder per config; default: output/<name>
         "per_day": False,            # True -> <dir>/2026-10-13/ (fresh set of dbs every day)
-        "max_db_mb": 45,             # every db file rolls to *_0002.db before it reaches this size
+        "max_db_mb": 45,             # every db file rolls to *_0002.db before it reaches this size; 0 = no limit
         "store_pages": True,         # pages table (one row per fetched page)
         "store_pages_text": False,   # also keep per-page text there (sites table already has all of it)
+        "store_html": False,         # also keep each page's html (zlib) in pages.html_z, for reprocessing later
     },
     "run": {
         "threads": 3,
@@ -33,6 +34,8 @@ DEFAULTS = {
         "resume": True,
         "retry_statuses": ["error", "timeout", "laya_down"],
         "pause_between_sites_sec": 0.0,
+        "host_delay_sec": 0,         # one request series per host at a time, and this long (+ up to 50%) between them
+        "rung_delay_sec": 0,         # pause between ladder rungs of one site (each tor rung also gets a new exit)
     },
     "crawl": {
         "max_pages": 4,              # home + sub pages
@@ -51,19 +54,43 @@ DEFAULTS = {
     "fetch": {
         # escalation ladder, tried in order until a page is accepted.
         # rungs: http | browser | browser_headed | browser_tor | browser_headed_tor | http_tor
-        "ladder": ["http", "browser", "browser_headed", "browser_tor"],
+        "ladder": ["http", "browser", "browser_headed", "browser_tor", "browser_headed_tor"], "shield_via_tor": True, "engine": "playwright", "chrome_path": "", "chrome_port": 9222, "chrome_args": [], "chrome_profile": "",
         "timeout_sec": 30,
         "user_agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+        "browser_channel": "chrome",     # use the Chrome installed on this PC (passes challenges far more often); "" = bundled chromium
         "block_resources": ["image", "media", "font"],   # browser: skip heavy resources
     },
     "network": {
+        "tor_rotate": True,          # a fresh tor circuit / exit IP for every site (http + camoufox; chromium cannot send socks credentials)
         "tor_socks": None,           # e.g. socks5://127.0.0.1:9050 (Tor must already be running)
         "dead_confirm_tries": 3,     # DNS-dead domains are re-checked this many times via Tor
         "accept_unconfirmed_dead": False,
+        "tor_uk": False,             # tor exits must be UK: with tor_exe tor is started with ExitNodes {gb}; an already running tor is checked
+        "tor_exe": "",               # path (or name on PATH) of tor / tor.exe: started here, stopped when we stop. "" = use tor_socks as it is
+        "tor_port": 9050,
+        "levels": [],                # e.g. [tor_uk, tor_world, direct]: route of a site's 1st / 2nd / 3rd rung (see proxies.py); [] = off
+        "proxy_pool": {              # free proxies from downloaded lists, UK only, scanned before the run (see proxies.py)
+            "enabled": False,
+            "mode": "both",          # both | pool | tor   (what the tor rungs use)
+            "tor_share": 0.5,        # mode both: share of new target hosts that go through tor
+            "sources": [],           # urls, or {url, scheme: socks5|socks4|http|auto}; "ip:port" or "scheme://ip:port" per line
+            "uk_ranges": {"url": "https://www.ipdeny.com/ipblocks/data/countries/gb.zone", "file": "", "refresh_hours": 168},
+            "uk_only": True,         # keep only listed proxies whose own ip is in the UK range list (before scanning)
+            "require_uk_exit": True, # and whose exit ip (seen by ip_check_url) is UK too
+            "ip_check_url": "http://api.ipify.org",   # plain http, answers with the caller's ip
+            "scan_threads": 300,     # 100-500 proxies tried at once
+            "tries": 3,              # attempts per proxy before it is dropped
+            "timeout_sec": 6,
+            "connect_timeout_sec": 10,   # gateway: connecting through one upstream
+            "gateway_port": 8899,
+            "sticky_sec": 300,       # one target host keeps the same exit this long
+            "refresh_min": 0,        # >0: download + scan again every N minutes while running
+        },
     },
-    "laya": {                        # MANDATORY - runs INSIDE this app (no separate server), no off switch
-        "device": "auto",            # auto | cpu | cuda
+    "laya": {                        # runs INSIDE this app (no separate server)
+        "enabled": True,             # false = raw mode: no laya at all, full raw text is stored for postprocess.py
+        "device": "auto",           # auto | cpu | cuda
         "models": "auto",            # auto (cpu: english only, gpu: all) | english,multilingual,typed-decisions
         "torch_threads": 8,
         "max_ram_mb": 10000,         # RAM watchdog: unloads the least-used checkpoint above this
@@ -125,9 +152,9 @@ DEFAULTS = {
     # action: wait | escalate | stop | single_page | crawl
     "classes": {
         "ok":          {"action": "crawl"},
-        "holding":     {"action": "wait", "max_wait_sec": 45, "poll_sec": 1.5,
-                        "clear_cookies": "all", "clear_every_sec": 12, "extra_patterns": []},
-        "cloudflare":  {"action": "wait", "max_wait_sec": 25, "poll_sec": 2.0,
+        "holding":     {"action": "wait", "max_wait_sec": 60, "poll_sec": 1.5, "interact": True,
+                        "clear_cookies": [], "clear_every_sec": 0, "reload_every_sec": 10, "extra_patterns": []},
+        "cloudflare":  {"action": "wait", "max_wait_sec": 60, "poll_sec": 2.0, "interact": True,
                         "clear_cookies": [], "clear_every_sec": 0, "extra_patterns": []},
         "dead":        {"action": "stop", "status": "dead", "extra_patterns": []},
         "third_party": {"action": "single_page", "status": "third_party",
@@ -195,7 +222,7 @@ def _merge(base, over):
     return base
 
 
-def load(path):
+def load(path, need_input=True):
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         sys.exit(f"config not found: {path}")
@@ -226,8 +253,13 @@ def load(path):
     cfg["_base"] = base
     cfg["_path"] = path
 
+    if not cfg["laya"]["enabled"]:               # raw mode: nothing here needs laya
+        cfg["facts"]["enabled"] = False
+        cfg["logos"]["enabled"] = False
+        cfg["parse"]["laya_block_filter"] = False
+        cfg["laya"]["summary"] = False
     if cfg["facts"]["enabled"] and not (cfg["facts"]["file"] and os.path.isfile(cfg["facts"]["file"])):
         sys.exit(f"facts.file (info.yml) not found: {cfg['facts']['file']} - or set facts.enabled: false")
-    if not cfg["input"]["path"] or not os.path.isfile(cfg["input"]["path"]):
+    if need_input and (not cfg["input"]["path"] or not os.path.isfile(cfg["input"]["path"])):
         sys.exit(f"input.path missing or not a file: {cfg['input']['path']}")
     return _wrap(cfg)

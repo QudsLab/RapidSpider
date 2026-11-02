@@ -24,6 +24,7 @@ Start with the guide that matches what you want to do.
 | Fix a wrong decision or adapt it to my niche | [Laya](laya.md) |
 | Read the results | [Output](output.md) |
 | Monitor, pause or review a run | [Web interface](web-ui.md) |
+| Retry failed sites, run without Laya, route through the UK | [Advanced modes](advanced-modes.md) |
 | Fix a problem | [Troubleshooting](troubleshooting.md) |
 
 [Back to the project README](../README.md)

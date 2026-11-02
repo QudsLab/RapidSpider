@@ -192,6 +192,8 @@ def build(cfg, store, engine, laya, facts, log):
     rd = Reader(root)
     app = Flask(__name__)
     app.json.sort_keys = False
+    _json_default = app.json.default
+    app.json.default = lambda o: f"<{len(o)} bytes>" if isinstance(o, (bytes, bytearray)) else _json_default(o)   # pages.html_z
     here = os.path.dirname(__file__)
     page_html = open(os.path.join(here, "ui_page.html"), encoding="utf-8").read()
     assets = os.path.normpath(os.path.join(here, "..", "assets"))

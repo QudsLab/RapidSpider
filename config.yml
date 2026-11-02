@@ -40,10 +40,16 @@ parse:
   near_dup: 0.7                               # paragraphs this similar to one already kept on the site are dropped
 
 fetch:
-  ladder: [http, browser, browser_headed, browser_tor]   # tried in this order until a page is accepted
+  browser_channel: chrome                     # the Chrome installed on this PC (falls back to bundled chromium); "" = bundled only
+  ladder: [http, browser, browser_headed, browser_tor, browser_headed_tor]   # tried in this order until a page is accepted
+  chrome_path: ""                             # engine chrome: empty = find Chrome automatically
+  chrome_port: 9222
+  engine: chrome                              # playwright | chrome (your real Chrome, best against cloudflare) | patchright (pip install patchright) | camoufox (pip install camoufox; python -m camoufox fetch)
+  shield_via_tor: true                        # Cloudflare / 'one moment' seen -> never retry from the direct IP, only through tor
   timeout_sec: 30
 
 network:
+  tor_rotate: true                            # new tor circuit per site (http + camoufox only)
   tor_socks: null                             # e.g. socks5://127.0.0.1:9050  (Tor must be running)
   dead_confirm_tries: 3
   accept_unconfirmed_dead: false
@@ -88,14 +94,17 @@ laya:                                         # mandatory, runs INSIDE this prog
 classes:
   holding:                                    # hosting/cPanel-style "One moment, please..." shield
     action: wait
-    max_wait_sec: 45
+    interact: true                            # act like a person: drift the mouse, click the verify checkbox / button
+    max_wait_sec: 60
     poll_sec: 1.5
-    clear_cookies: all                        # all | [cookie names]
-    clear_every_sec: 12                       # clear cookies + reload on this timer
+    clear_cookies: []                         # all | [cookie names]  (clearing wipes the shield's own pass cookie)
+    clear_every_sec: 0                        # >0 = clear cookies + reload on this timer
+    reload_every_sec: 10                      # else just re-open the page (cookies kept)
     extra_patterns: []
   cloudflare:
     action: wait
-    max_wait_sec: 25
+    interact: true                            # clicks the Turnstile checkbox like a person (needs a rung with a real browser)
+    max_wait_sec: 60
     extra_patterns: []
   dead:                                       # parked / expired / placeholder / suspended / 404
     action: stop

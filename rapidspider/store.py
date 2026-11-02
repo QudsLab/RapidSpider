@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import threading
+import zlib
 from datetime import datetime, timezone
 
 TRACK_SCHEMA = """
@@ -29,7 +30,7 @@ CREATE TABLE IF NOT EXISTS track (
     attempts INTEGER DEFAULT 0, rung TEXT, pages INTEGER DEFAULT 0, words INTEGER DEFAULT 0,
     tor_used INTEGER DEFAULT 0, sites_part INTEGER, started_at TEXT, finished_at TEXT,
     elapsed_ms INTEGER, error TEXT,
-    processed INTEGER DEFAULT 1            -- 0 = imported as-is, still to be cleaned/judged by laya later
+    processed INTEGER DEFAULT 1            -- 0 = imported or stored raw, still to be cleaned/judged by laya later
 );
 CREATE INDEX IF NOT EXISTS idx_track_status ON track(status);
 CREATE INDEX IF NOT EXISTS idx_track_done ON track(done);
@@ -42,7 +43,7 @@ SCHEMAS = {
         CREATE INDEX IF NOT EXISTS idx_sites_id ON sites(id);""",
     "pages": """CREATE TABLE IF NOT EXISTS pages (
         site_id TEXT, attempt INTEGER, url TEXT, http_status INTEGER, title TEXT, words INTEGER, text TEXT,
-        fetched_at TEXT, raw TEXT);
+        fetched_at TEXT, raw TEXT, html_z BLOB);
         CREATE INDEX IF NOT EXISTS idx_pages_site ON pages(site_id);""",
     "logos": """CREATE TABLE IF NOT EXISTS logos (
         site_id TEXT, attempt INTEGER, url TEXT, source TEXT, score INTEGER, laya_score REAL, is_logo INTEGER,
@@ -164,7 +165,7 @@ class Store:
         self.cfg = cfg
         self.root = cfg.output.root
         os.makedirs(self.root, exist_ok=True)
-        limit = int(float(cfg.output.max_db_mb) * 1024 * 1024)
+        limit = int(float(cfg.output.max_db_mb) * 1024 * 1024) or float("inf")      # max_db_mb: 0 = no limit
         self.track = sqlite3.connect(os.path.join(self.root, "track.db"), isolation_level=None, check_same_thread=False, timeout=15)
         self.track.execute("PRAGMA journal_mode=WAL")
         self.track.executescript(TRACK_SCHEMA)
@@ -216,9 +217,12 @@ class Store:
             if self.cfg.output.store_pages and s.pages:
                 from .parse import words
                 keep = self.cfg.output.store_pages_text
+                zl = bool(self.cfg.output.store_html)
                 self.sh["pages"].insert_many(
-                    "INSERT INTO pages VALUES (?,?,?,?,?,?,?,?,?)",
-                    [(rid, attempt, p.url, p.status, p.title, words(t), t if keep else None, now(), getattr(p, "raw", None))
+                    "INSERT INTO pages (site_id,attempt,url,http_status,title,words,text,fetched_at,raw,html_z) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    [(rid, attempt, p.url, p.status, p.title, words(t), t if keep else None, now(), getattr(p, "raw", None),
+                      zlib.compress(p.html.encode("utf-8", "replace"), 6) if zl and getattr(p, "html", "") else None)
                      for p, t in s.pages])
             if s.logos:
                 self.sh["logos"].insert_many(
@@ -245,25 +249,32 @@ class Store:
                 "INSERT INTO incidents VALUES (?,?,?,?,?,?)",
                 [(rid, attempt, at, step, out, det) for at, step, out, det in s.incidents])
         from .parse import words as _w
+        # raw mode (laya off): what has text is not judged yet -> processed=0, postprocess.py finishes it later
+        processed = 0 if (not self.cfg.laya.enabled and s.status in ("ok", "third_party", "no_content")) else 1
         self.track.execute(
             "UPDATE track SET final_url=?, status=?, class=?, reason=?, done=?, rung=?, pages=?, words=?, tor_used=?, "
-            "sites_part=?, finished_at=?, elapsed_ms=?, error=? WHERE id=?",
+            "sites_part=?, finished_at=?, elapsed_ms=?, error=?, processed=? WHERE id=?",
             (s.final_url, s.status, s.cls, s.reason[:200], done, s.rung, len(s.pages),
-             sum(_w(t) for _, t in s.pages), int(s.tor), sites_part, now(), elapsed_ms, s.error or None, rid))
+             sum(_w(t) for _, t in s.pages), int(s.tor), sites_part, now(), elapsed_ms, s.error or None, processed, rid))
 
-    def requeue(self, statuses):
-        """make finished sites run again: their rows leave every table and track.db marks them retryable."""
-        marks = ",".join("?" * len(statuses))
-        ids = [r[0] for r in self.track.execute(f"SELECT id FROM track WHERE status IN ({marks})", list(statuses))]
-        keys = {"sites": "id", "pages": "site_id", "logos": "site_id", "incidents": "site_id", "site_logs": "site_id", "facts": "site_id",
-                "profiles": "site_id"}
-        for name, col in keys.items():
+    def purge(self, ids, names):
+        """delete these sites' rows from the given tables (every shard file)."""
+        keys = {"sites": "id", "pages": "site_id", "logos": "site_id", "incidents": "site_id", "site_logs": "site_id",
+                "facts": "site_id", "profiles": "site_id"}
+        for name in names:
+            col = keys[name]
             for f in glob.glob(os.path.join(self.root, f"{name}_*.db")):
                 con = sqlite3.connect(f, isolation_level=None)
                 for i in range(0, len(ids), 500):
                     chunk = ids[i:i + 500]
                     con.execute(f"DELETE FROM {name} WHERE {col} IN ({','.join('?' * len(chunk))})", chunk)
                 con.close()
+
+    def requeue(self, statuses):
+        """make finished sites run again: their rows leave every table and track.db marks them retryable."""
+        marks = ",".join("?" * len(statuses))
+        ids = [r[0] for r in self.track.execute(f"SELECT id FROM track WHERE status IN ({marks})", list(statuses))]
+        self.purge(ids, ["sites", "pages", "logos", "incidents", "site_logs", "facts", "profiles"])
         self.track.execute(f"UPDATE track SET status='error', done=3, attempts=0, error='requeued' "
                            f"WHERE status IN ({marks})", list(statuses))
         return len(ids)

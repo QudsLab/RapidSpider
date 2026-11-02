@@ -72,6 +72,8 @@ def answer_label(ans):
 
 
 class Laya:
+    enabled = True
+
     def __init__(self, cfg, log, store=None):
         self.cfg = cfg.laya
         self.log = log
@@ -212,6 +214,18 @@ class Laya:
         if c == "permanent_error":
             return "giveup"
         return "wait"
+
+    async def shield_action(self, text, options, history):
+        """dynamic decision for a shield / challenge page: laya picks the next move from the moves that are
+        possible right now. options: {name: description}; history: [(action, result)] already tried."""
+        t = (text or "")[:1500]
+        tried = "; ".join(f"{a}->{r}" for a, r in history[-6:]) or "nothing yet"
+        a = await self.ask({"body": t}, {
+            "move": choice("A scraper is stuck on this verification page. Already tried: " + tried +
+                           ". Pick the single best next move.", dict(options))},
+                         {"move": {"task": "shield", "text": t, "near": None}})
+        c = str((a.get("move") or {}).get("choice", "")).strip()
+        return c if c in options else None
 
     async def page_review(self, text, title):
         """-> (real_content: bool|None, anomaly: str, nearest_example: (sim,label)|None)"""
@@ -457,3 +471,49 @@ BLOCK_CHECKS = [
     ("not_ui", "Is this text real sentences about the business, rather than menu, cookie, form or footer text?",
      "real content", "menu, cookie, form or footer text"),
 ]
+
+
+class NoLaya:
+    """laya.enabled: false - raw mode. Nothing is loaded (no torch, no models) and nothing is decided by laya:
+    the engine falls back to the pattern classifier and stores the full raw text (track.processed = 0) so
+    postprocess.py can run laya over it later, on any machine that has laya."""
+    enabled = False
+
+    # fixed order for the shield moves laya would otherwise pick (the first one not tried yet)
+    MOVE_ORDER = ("click_challenge", "click_button", "scroll", "wander", "reload", "reset", "escalate")
+
+    def __init__(self, cfg, log, store=None):
+        self.log = log
+        self.calls = 0
+        self.info = {"enabled": False}
+
+    async def ensure_running(self):
+        self.log.info("laya: OFF (raw mode) - raw text is stored, run postprocess.py later where laya is installed")
+
+    async def close(self):
+        pass
+
+    def stats(self):
+        return {"calls": 0, "avg_ms": 0, "last_error": "", "enabled": False}
+
+    async def page_review(self, text, title):
+        return None, "none", None
+
+    async def rank_links(self, cands, hint):
+        return cands                              # already ordered by crawl.prefer_paths
+
+    async def shield_action(self, text, options, history):
+        tried = {h[0] for h in history}
+        for k in self.MOVE_ORDER:
+            if k in options and k not in tried:
+                return k
+        return "wait"
+
+    async def wait_referee(self, text):
+        return "wait"
+
+    async def about_trader(self, blocks, name):
+        return [0.0] * len(blocks)
+
+    async def summary(self, text):
+        return ""

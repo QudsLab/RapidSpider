@@ -1,0 +1,119 @@
+# RapidSpider UK-route config: Laya ON, every request leaves from a UK IP (never your own IP).
+#   tor with UK exits only  +  free proxies downloaded from the lists below, cut to UK IPs, tested before the run.
+#   python main.py config.uk.yml
+name: uk
+
+input:
+  path: input/retry.sqlite                    # the sites that were not ok / third_party (make_retry_input.py). Change to any input you like
+  format: auto
+  table: retry
+  where: "TRIM(COALESCE(website,'')) != ''"
+  columns:
+    id: id
+    url: website
+    name: name
+    address: [town]
+  extra_columns: [town]
+  limit: 0
+
+output:
+  dir: output/uk
+  per_day: false
+  max_db_mb: 45
+  store_pages: true
+  store_html: true                            # keeps the html (zlib) so postprocess.py can redo everything later
+
+run:
+  threads: 5
+  host_delay_sec: 25                          # the same host is never hit twice within ~25-37 s, and never by two threads at once
+  rung_delay_sec: 10                          # pause before the next rung of a site; each tor rung leaves from a new exit
+  max_attempts: 3
+  site_budget_sec: 300
+  resume: true
+  retry_statuses: [error, timeout, laya_down]
+
+crawl:
+  max_pages: 4
+  use_sitemap: true
+  max_page_chars: 40000
+  max_site_chars: 120000
+  min_site_words: 60
+
+fetch:
+  browser_channel: chrome
+  ladder: [http_tor, browser_tor, browser_headed_tor]   # tor rungs only: nothing is ever fetched from the direct IP
+  chrome_path: ""
+  chrome_port: 9222
+  engine: chrome
+  shield_via_tor: true
+  timeout_sec: 30
+
+network:
+  tor_uk: true                                # tor exits must be UK (checked with the UK range list; otherwise tor is not used)
+  tor_exe: auto                               # auto = use tor if found, else download the Tor Expert Bundle from torproject.org into tools/tor.
+                                              # Or the full path / name of your own tor(.exe). It is started here with ExitNodes {gb}
+                                              # StrictNodes 1 and stopped when this program stops. "" = no tor of our own (tor_socks below)
+  levels: [tor_uk, tor_world, direct]         # one level per rung of a site: 1st rung = tor with UK exits, 2nd = a second tor with ANY exit,
+                                              # 3rd = this PC's own connection (some sites block tor but open normally). Delete 'direct' to never use your own IP.
+                                              # UK-only tor has very few exits, many are blocked (Akamai 'Access Denied'); other countries' exits are not.
+  tor_port: 9250                              # our own tor listens here (not 9050, so it never meets another tor)
+  tor_socks: null
+  dead_confirm_tries: 3
+  accept_unconfirmed_dead: false
+  proxy_pool:
+    enabled: false                            # free proxy lists: off (levels above are used). true only without levels
+    mode: tor                                 # tor = tor only (free proxies are mostly dead or tamper with https) | both | pool
+    tor_share: 0.5                            # mode both: share of target hosts that go through tor
+    sources:                                  # downloaded again on every start. ip:port or scheme://ip:port per line
+      - {url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", scheme: socks5}
+      - {url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt", scheme: socks4}
+      - {url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", scheme: http}
+      - {url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", scheme: socks5}
+      - {url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt", scheme: socks4}
+      - {url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", scheme: http}
+      - {url: "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt", scheme: socks5}
+      - {url: "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&country=GB", scheme: socks5}
+      - {url: "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&country=GB", scheme: socks4}
+      - {url: "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&country=GB", scheme: http}
+    uk_ranges:                                # the IP range database: one CIDR per line
+      url: https://www.ipdeny.com/ipblocks/data/countries/gb.zone
+      file: ""                                # your own file instead (then nothing is downloaded)
+      refresh_hours: 168
+    uk_only: true                             # listed proxy IPs outside the UK ranges are dropped before scanning. false = scan every proxy
+    require_uk_exit: true                     # a proxy is kept only if the IP it exits from is UK too
+    ip_check_url: http://api.ipify.org        # plain http, answers with the caller's IP
+    scan_threads: 300                         # 100-500 proxies tested at the same time, before the first site starts
+    tries: 3                                  # each proxy gets this many attempts (socks5, socks4, http) before it is dropped
+    timeout_sec: 6
+    gateway_port: 8899                        # local proxy the browser / http client use; it picks the exit
+    sticky_sec: 300                           # one target host keeps the same exit this long
+    refresh_min: 60                           # download + scan again every N minutes while running (0 = only at start)
+
+laya:
+  enabled: true
+  device: auto
+  models: auto
+  torch_threads: 8
+  confirm: {rounds: 5, min_agree: 0.6}
+
+parse:
+  laya_block_filter: true
+  drop_confidence: 0.6
+  near_dup: 0.7
+
+facts:
+  enabled: true
+  file: info.yml
+
+classes:
+  holding: {action: wait, interact: true, max_wait_sec: 60, poll_sec: 1.5, reload_every_sec: 10}
+  cloudflare: {action: wait, interact: true, max_wait_sec: 60}
+
+logos:
+  enabled: false
+
+ui:
+  enabled: true
+  host: 127.0.0.1
+  port: 8800
+  keep_alive: true

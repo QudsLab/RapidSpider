@@ -1,0 +1,67 @@
+# RapidSpider RAW config: no Laya at all. Fetches every site that is not already done (ok / third_party in
+# backup/dental) and stores the full raw text + html. Laya runs later:  python postprocess.py config.yml --from output/retry
+#   python make_retry_input.py backup/dental/track.db input/sites.sqlite input/retry.sqlite   (once)
+#   python main.py config.raw.yml
+name: retry
+
+input:
+  path: input/retry.sqlite                    # made by make_retry_input.py: directory columns + every track column (track_*)
+  format: auto
+  table: retry
+  where: "TRIM(COALESCE(website,'')) != ''"
+  columns:
+    id: id
+    url: website
+    name: name
+    address: [town]
+  extra_columns: [town]
+  limit: 0                                    # 0 = all rows
+
+output:
+  dir: output/retry
+  per_day: false
+  max_db_mb: 0                                # 0 = no file size limit: one file per table
+  store_pages: true
+  store_html: true                            # pages.html_z (zlib) - lets postprocess.py rebuild everything later
+
+run:
+  threads: 3
+  max_attempts: 3
+  site_budget_sec: 240
+  resume: true
+  retry_statuses: [error, timeout, laya_down]
+
+crawl:
+  max_pages: 4
+  use_sitemap: true
+  max_page_chars: 40000
+  max_site_chars: 120000
+  min_site_words: 60
+
+fetch:
+  browser_channel: chrome
+  ladder: [http, browser, browser_headed, browser_tor, browser_headed_tor]
+  chrome_path: ""
+  chrome_port: 9222
+  engine: chrome
+  shield_via_tor: true
+  timeout_sec: 30
+
+network:
+  tor_rotate: true
+  tor_socks: null                             # e.g. socks5://127.0.0.1:9050  (Tor must be running)
+  dead_confirm_tries: 3
+  accept_unconfirmed_dead: false
+
+laya:
+  enabled: false                              # raw mode: facts, logos, block filter and every laya decision are off
+
+classes:                                      # holding / cloudflare pages: moves are tried in a fixed order (click verify, scroll, reload ...)
+  holding: {action: wait, interact: true, max_wait_sec: 60, reload_every_sec: 10}
+  cloudflare: {action: wait, interact: true, max_wait_sec: 60}
+
+ui:
+  enabled: true
+  host: 127.0.0.1
+  port: 8800
+  keep_alive: true
